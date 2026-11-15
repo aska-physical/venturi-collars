@@ -1,0 +1,80 @@
+{
+  "certificate_version": "1.0.0",
+  "duct_geometry": {
+    "diam_mm": 200,
+    "diffuser_half_angle_deg": 7.0,
+    "reeds": 6,
+    "throat_area_ratio_beta": 0.64
+  },
+  "hybrid_cfrp_pcb_coil_sweep": [
+    {
+      "P_fluid_loss_mW": 18.49,
+      "P_piezo_only_mW": 0.0031,
+      "P_total_harvested_mW": 0.104,
+      "U_crit_throat_m_s": 2.233,
+      "U_duct_m_s": 1.8,
+      "U_throat_m_s": 2.812,
+      "dP_total_Pa": 0.327,
+      "f_flutter_Hz": 5.32,
+      "peak_cfrp_strain_pct": 0.0098
+    },
+    {
+      "P_fluid_loss_mW": 49.54,
+      "P_piezo_only_mW": 0.011,
+      "P_total_harvested_mW": 0.3652,
+      "U_crit_throat_m_s": 2.233,
+      "U_duct_m_s": 2.5,
+      "U_throat_m_s": 3.906,
+      "dP_total_Pa": 0.631,
+      "f_flutter_Hz": 5.32,
+      "peak_cfrp_strain_pct": 0.0183
+    },
+    {
+      "P_fluid_loss_mW": 202.91,
+      "P_piezo_only_mW": 0.0277,
+      "P_total_harvested_mW": 0.9244,
+      "U_crit_throat_m_s": 2.233,
+      "U_duct_m_s": 4.0,
+      "U_throat_m_s": 6.25,
+      "dP_total_Pa": 1.615,
+      "f_flutter_Hz": 5.32,
+      "peak_cfrp_strain_pct": 0.0292
+    },
+    {
+      "P_fluid_loss_mW": 684.81,
+      "P_piezo_only_mW": 0.0277,
+      "P_total_harvested_mW": 0.9244,
+      "U_crit_throat_m_s": 2.233,
+      "U_duct_m_s": 6.0,
+      "U_throat_m_s": 9.375,
+      "dP_total_Pa": 3.633,
+      "f_flutter_Hz": 5.32,
+      "peak_cfrp_strain_pct": 0.0292
+    }
+  ],
+  "must_fail_controls": [
+    {
+      "control": "harvested_power_violates_first_law_fluid_work",
+      "rejected": true
+    },
+    {
+      "control": "pure_pvdf_film_alone_meets_150uW_continuous_co2_node_at_4ms",
+      "rejected": true
+    },
+    {
+      "control": "unaccelerated_straight_duct_starts_at_1.5ms_turndown",
+      "rejected": true
+    },
+    {
+      "control": "abrupt_45deg_baffle_meets_15Pa_hvac_static_pressure_limit",
+      "rejected": true
+    },
+    {
+      "control": "reed_exceeds_m55j_0.8pct_ultimate_strain_at_6ms",
+      "rejected": true
+    }
+  ],
+  "pure_pvdf_4ms_negative_finding_mW": 0.0476,
+  "repository": "aska-physical/venturi-collars",
+  "telemetry_power_margin_at_4ms_x": 11.55
+}
