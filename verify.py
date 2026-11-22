@@ -14,6 +14,16 @@ ROOT = Path(__file__).resolve().parent
 CERT_PATH = ROOT / "results" / "certificate.json"
 
 
+class CheckFailure(RuntimeError):
+    """Raised when a physical invariant or must-fail control fails verification."""
+
+
+def require(ok: bool, message: str) -> None:
+    """Enforce a verification invariant regardless of Python -O optimization."""
+    if not ok:
+        raise CheckFailure(message)
+
+
 def evaluate_venturi_collar(
     duct_diam_m: float,
     area_ratio_beta: float,
@@ -86,7 +96,10 @@ def evaluate_venturi_collar(
         P_em_mW = num_reeds * P_em_per_reed_W * 1e3
 
     P_tot_mW = P_piezo_mW + P_em_mW
-    assert P_tot_mW * 1e-3 < 0.20 * P_fluid_W
+    require(
+        P_tot_mW * 1e-3 < 0.20 * P_fluid_W,
+        f"harvested power {P_tot_mW:.4f} mW exceeds 20% of fluid loss {P_fluid_W * 1e3:.2f} mW",
+    )
 
     return {
         "U_duct_m_s": U_duct_m_s,
@@ -113,9 +126,18 @@ def run_verification() -> dict[str, Any]:
     bluff_orifice_4ms = evaluate_venturi_collar(0.20, 0.50, 45.0, 4.0, hybrid_em_coil=True)
 
     sensor_demand_mW = 0.08
-    assert sweep_hybrid[0]["P_total_harvested_mW"] > sensor_demand_mW
-    assert piezo_only_4ms["P_total_harvested_mW"] < sensor_demand_mW
-    assert sweep_hybrid[2]["dP_total_Pa"] < 6.0
+    require(
+        sweep_hybrid[0]["P_total_harvested_mW"] > sensor_demand_mW,
+        f"1.8 m/s hybrid harvested power {sweep_hybrid[0]['P_total_harvested_mW']} mW <= {sensor_demand_mW} mW demand",
+    )
+    require(
+        piezo_only_4ms["P_total_harvested_mW"] < sensor_demand_mW,
+        f"4.0 m/s piezo-only harvested power {piezo_only_4ms['P_total_harvested_mW']} mW >= {sensor_demand_mW} mW demand",
+    )
+    require(
+        sweep_hybrid[2]["dP_total_Pa"] < 6.0,
+        f"4.0 m/s total pressure drop {sweep_hybrid[2]['dP_total_Pa']} Pa >= 6.0 Pa limit",
+    )
 
     controls = [
         {"control": "harvested_power_violates_first_law_fluid_work", "rejected": all(r["P_total_harvested_mW"] < 0.15 * r["P_fluid_loss_mW"] for r in sweep_hybrid)},
@@ -124,7 +146,8 @@ def run_verification() -> dict[str, Any]:
         {"control": "abrupt_45deg_baffle_meets_15Pa_hvac_static_pressure_limit", "rejected": bluff_orifice_4ms["dP_total_Pa"] > 15.0 and sweep_hybrid[2]["dP_total_Pa"] < 6.0},
         {"control": "reed_exceeds_m55j_0.8pct_ultimate_strain_at_6ms", "rejected": sweep_hybrid[3]["peak_cfrp_strain_pct"] < 0.25},
     ]
-    assert all(c["rejected"] for c in controls)
+    failed_controls = [c["control"] for c in controls if not c["rejected"]]
+    require(not failed_controls, f"must-fail controls did not reject: {failed_controls}")
 
     return {
         "repository": "aska-physical/venturi-collars",
@@ -148,7 +171,9 @@ def main() -> int:
     if not CERT_PATH.exists() or json.loads(CERT_PATH.read_text(encoding="utf-8")) != cert:
         print("[FAIL] results/certificate.json mismatch or missing", file=sys.stderr)
         return 1
-    print("[PASS] venturi-collars Venturi dP + PVDF negative finding + Hybrid CFRP-Coil checks (5/5 controls): OK")
+    passed_controls = sum(1 for c in cert["must_fail_controls"] if c["rejected"])
+    total_controls = len(cert["must_fail_controls"])
+    print(f"[PASS] venturi-collars Venturi dP + PVDF negative finding + Hybrid CFRP-Coil checks ({passed_controls}/{total_controls} controls): OK")
     return 0
 
 
