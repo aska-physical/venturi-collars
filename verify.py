@@ -4,14 +4,92 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import math
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 CERT_PATH = ROOT / "results" / "certificate.json"
+MAX_CERT_BYTES = 1_048_576
+
+
+class CheckFailure(RuntimeError):
+    """Raised when a physical invariant, finite-value guard, or canonical certificate check fails."""
+
+
+def require(ok: bool, message: str) -> None:
+    """Enforce a verification invariant regardless of Python -O optimization."""
+    if not ok:
+        raise CheckFailure(message)
+
+
+def strict_finite(
+    value: Any,
+    name: str,
+    *,
+    positive: bool = False,
+    non_negative: bool = False,
+) -> float:
+    """Validate that a numeric input/output is an exact int/float (not bool) and finite."""
+    require(type(value) in (int, float), f"{name} must be finite number, got {type(value).__name__}")
+    val = float(value)
+    require(math.isfinite(val), f"{name} must be finite, got {value!r}")
+    if positive:
+        require(val > 0.0, f"{name} must be positive, got {val!r}")
+    if non_negative:
+        require(val >= 0.0, f"{name} must be non-negative, got {val!r}")
+    return val
+
+
+def strict_finite_min(bound: Any, value: Any, name: str) -> float:
+    """NaN-safe upper clamp: rejects non-finite arguments instead of silently swallowing NaN."""
+    fb = strict_finite(bound, f"{name}.bound")
+    fv = strict_finite(value, f"{name}.value")
+    return fb if fb <= fv else fv
+
+
+def render_canonical_cert_bytes(cert: dict[str, Any]) -> bytes:
+    """Render deterministic LF-terminated canonical JSON bytes, forbidding NaN/Infinity."""
+    return (json.dumps(cert, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+
+
+def _require_no_symlink_cert_path(cert_path: Path) -> None:
+    require(not os.path.islink(cert_path.parent), "results/certificate.json mismatch or missing: symlink parent directory forbidden")
+    require(not os.path.islink(cert_path), "results/certificate.json mismatch or missing: symlink certificate path forbidden")
+
+
+def verify_canonical_cert_bytes(cert_path: Path, expected_bytes: bytes) -> None:
+    """Fail-closed canonical-byte certificate verifier closing Zone-B dict/JSON/symlink bypasses."""
+    _require_no_symlink_cert_path(cert_path)
+    try:
+        st = os.lstat(cert_path)
+    except OSError as exc:
+        raise CheckFailure(f"results/certificate.json mismatch or missing: {exc}") from exc
+    require(stat.S_ISREG(st.st_mode), "results/certificate.json mismatch or missing: not a regular file")
+    require(st.st_size <= MAX_CERT_BYTES, "results/certificate.json mismatch or missing: exceeds size cap")
+    try:
+        raw = cert_path.read_bytes()
+    except OSError as exc:
+        raise CheckFailure(f"results/certificate.json mismatch or missing: {exc}") from exc
+    require(
+        hmac.compare_digest(raw, expected_bytes),
+        "results/certificate.json mismatch or missing: canonical byte mismatch",
+    )
+
+
+def write_canonical_cert_bytes(cert_path: Path, payload: bytes) -> None:
+    """Write canonical certificate bytes without following symlinks or overwriting non-regular files."""
+    _require_no_symlink_cert_path(cert_path)
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(cert_path):
+        st = os.lstat(cert_path)
+        require(stat.S_ISREG(st.st_mode), "refusing to overwrite non-regular certificate path")
+    cert_path.write_bytes(payload)
 
 
 def evaluate_venturi_collar(
@@ -22,6 +100,14 @@ def evaluate_venturi_collar(
     hybrid_em_coil: bool = True,
     num_reeds: int = 6,
 ) -> dict[str, float]:
+    duct_diam_m = strict_finite(duct_diam_m, "duct_diam_m", positive=True)
+    area_ratio_beta = strict_finite(area_ratio_beta, "area_ratio_beta", positive=True)
+    require(area_ratio_beta <= 1.0, f"area_ratio_beta must be <= 1.0, got {area_ratio_beta!r}")
+    diffuser_half_angle_deg = strict_finite(diffuser_half_angle_deg, "diffuser_half_angle_deg", non_negative=True)
+    U_duct_m_s = strict_finite(U_duct_m_s, "U_duct_m_s", non_negative=True)
+    require(type(hybrid_em_coil) is bool, "hybrid_em_coil must be bool")
+    require(type(num_reeds) is int and num_reeds >= 1, "num_reeds must be positive int")
+
     rho_air = 1.204
     A_duct = 0.25 * math.pi * (duct_diam_m**2)
     Q_m3_s = A_duct * U_duct_m_s
@@ -66,7 +152,7 @@ def evaluate_venturi_collar(
         }
 
     vel_factor = math.sqrt((U_throat**2 - U_crit_throat**2) / (U_crit_throat**2 + 6.0))
-    tip_amp_m = min(0.0040, 0.0026 * vel_factor)
+    tip_amp_m = strict_finite_min(0.0040, 0.0026 * vel_factor, "tip_amp_m")
     y_max = 0.5 * t_cfrp_m + t_pvdf_tot
     peak_strain = 3.52 * tip_amp_m * y_max / (reed_L_m**2)
     eps_rms = 0.55 * peak_strain
@@ -85,8 +171,12 @@ def evaluate_venturi_collar(
         P_em_per_reed_W = 0.82 * ((k_em * v_tip_rms) ** 2) / (4.0 * R_coil)
         P_em_mW = num_reeds * P_em_per_reed_W * 1e3
 
-    P_tot_mW = P_piezo_mW + P_em_mW
-    assert P_tot_mW * 1e-3 < 0.20 * P_fluid_W
+    P_tot_mW = strict_finite(P_piezo_mW + P_em_mW, "P_tot_mW", non_negative=True)
+    P_fluid_W = strict_finite(P_fluid_W, "P_fluid_W", positive=True)
+    require(
+        P_tot_mW * 1e-3 < 0.20 * P_fluid_W,
+        f"harvested power {P_tot_mW:.4f} mW exceeds 20% of fluid loss {P_fluid_W * 1e3:.2f} mW",
+    )
 
     return {
         "U_duct_m_s": U_duct_m_s,
@@ -113,9 +203,18 @@ def run_verification() -> dict[str, Any]:
     bluff_orifice_4ms = evaluate_venturi_collar(0.20, 0.50, 45.0, 4.0, hybrid_em_coil=True)
 
     sensor_demand_mW = 0.08
-    assert sweep_hybrid[0]["P_total_harvested_mW"] > sensor_demand_mW
-    assert piezo_only_4ms["P_total_harvested_mW"] < sensor_demand_mW
-    assert sweep_hybrid[2]["dP_total_Pa"] < 6.0
+    require(
+        sweep_hybrid[0]["P_total_harvested_mW"] > sensor_demand_mW,
+        f"1.8 m/s hybrid harvested power {sweep_hybrid[0]['P_total_harvested_mW']} mW <= {sensor_demand_mW} mW demand",
+    )
+    require(
+        piezo_only_4ms["P_total_harvested_mW"] < sensor_demand_mW,
+        f"4.0 m/s piezo-only harvested power {piezo_only_4ms['P_total_harvested_mW']} mW >= {sensor_demand_mW} mW demand",
+    )
+    require(
+        sweep_hybrid[2]["dP_total_Pa"] < 6.0,
+        f"4.0 m/s total pressure drop {sweep_hybrid[2]['dP_total_Pa']} Pa >= 6.0 Pa limit",
+    )
 
     controls = [
         {"control": "harvested_power_violates_first_law_fluid_work", "rejected": all(r["P_total_harvested_mW"] < 0.15 * r["P_fluid_loss_mW"] for r in sweep_hybrid)},
@@ -124,7 +223,8 @@ def run_verification() -> dict[str, Any]:
         {"control": "abrupt_45deg_baffle_meets_15Pa_hvac_static_pressure_limit", "rejected": bluff_orifice_4ms["dP_total_Pa"] > 15.0 and sweep_hybrid[2]["dP_total_Pa"] < 6.0},
         {"control": "reed_exceeds_m55j_0.8pct_ultimate_strain_at_6ms", "rejected": sweep_hybrid[3]["peak_cfrp_strain_pct"] < 0.25},
     ]
-    assert all(c["rejected"] for c in controls)
+    failed_controls = [c["control"] for c in controls if not c["rejected"]]
+    require(not failed_controls, f"must-fail controls did not reject: {failed_controls}")
 
     return {
         "repository": "aska-physical/venturi-collars",
@@ -141,14 +241,18 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args()
-    cert = run_verification()
-    if args.write:
-        CERT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CERT_PATH.write_text(json.dumps(cert, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if not CERT_PATH.exists() or json.loads(CERT_PATH.read_text(encoding="utf-8")) != cert:
-        print("[FAIL] results/certificate.json mismatch or missing", file=sys.stderr)
+    try:
+        cert = run_verification()
+        expected_bytes = render_canonical_cert_bytes(cert)
+        if args.write:
+            write_canonical_cert_bytes(CERT_PATH, expected_bytes)
+        verify_canonical_cert_bytes(CERT_PATH, expected_bytes)
+    except CheckFailure as exc:
+        print(f"[FAIL] CheckFailure: {exc}", file=sys.stderr)
         return 1
-    print("[PASS] venturi-collars Venturi dP + PVDF negative finding + Hybrid CFRP-Coil checks (5/5 controls): OK")
+    passed_controls = sum(1 for c in cert["must_fail_controls"] if c["rejected"])
+    total_controls = len(cert["must_fail_controls"])
+    print(f"[PASS] venturi-collars Venturi dP + PVDF negative finding + Hybrid CFRP-Coil checks ({passed_controls}/{total_controls} controls): OK")
     return 0
 
 
