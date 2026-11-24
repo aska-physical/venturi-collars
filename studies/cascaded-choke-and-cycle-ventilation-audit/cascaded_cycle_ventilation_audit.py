@@ -27,6 +27,8 @@ import hmac
 import json
 import math
 from pathlib import Path
+import os
+import stat
 import sys
 from typing import Any
 
@@ -175,10 +177,43 @@ def _require_sha256_hex(val: Any, label: str) -> str:
     return val
 
 
+_DARWIN_SYSTEM_ROOT_ALIASES: tuple[tuple[str, str], ...] = (
+    ("/var", "/private/var"),
+    ("/tmp", "/private/tmp"),
+    ("/etc", "/private/etc"),
+)
+
+
+def _normalize_darwin_system_prefix(path: Path, *, allow_exact: bool = False) -> Path:
+    """Map verified root-owned macOS /var, /tmp, /etc aliases to /private/* without resolving user symlinks."""
+    if sys.platform != "darwin" or not path.is_absolute():
+        return path
+    parts = path.parts
+    min_parts = 2 if allow_exact else 3
+    if len(parts) < min_parts or parts[0] != "/" or ".." in parts:
+        return path
+    top = "/" + parts[1]
+    for alias, canonical in _DARWIN_SYSTEM_ROOT_ALIASES:
+        if top != alias:
+            continue
+        try:
+            st = os.lstat(alias)
+            if not stat.S_ISLNK(st.st_mode) or st.st_uid != 0:
+                return path
+            target = os.readlink(alias)
+            if target not in (canonical, canonical.lstrip("/")):
+                return path
+        except OSError:
+            return path
+        return Path(canonical, *parts[2:])
+    return path
+
+
 def _require_no_symlink_path(path: Path) -> None:
-    if path.is_symlink():
+    norm = _normalize_darwin_system_prefix(path)
+    if norm.is_symlink():
         raise VenturiBioError("SYMLINK_FORBIDDEN", f"symlink path forbidden: {path}")
-    for parent in path.parents:
+    for parent in norm.parents:
         if parent.is_symlink():
             raise VenturiBioError("SYMLINK_ANCESTOR_FORBIDDEN", f"symlink ancestor forbidden: {parent}")
 

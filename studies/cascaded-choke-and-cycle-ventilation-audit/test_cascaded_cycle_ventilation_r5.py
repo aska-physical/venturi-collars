@@ -414,6 +414,84 @@ class TestCertificateAndCliHardening(unittest.TestCase):
             self.assertEqual(p_huge.returncode, 2)
             self.assertIn("REJECT", p_huge.stderr)
 
+    def test_darwin_system_root_alias_normalization(self) -> None:
+        import stat
+        from types import SimpleNamespace
+        from unittest import mock
+
+        root_lnk = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+        user_lnk = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=1000)
+
+        def _fake_readlink(p: str) -> str:
+            if p == "/var":
+                return "private/var"
+            if p == "/tmp":
+                return "private/tmp"
+            if p == "/etc":
+                return "private/etc"
+            raise OSError("unexpected readlink")
+
+        with (
+            mock.patch.object(mod.sys, "platform", "darwin"),
+            mock.patch.object(mod.os, "lstat", return_value=root_lnk),
+            mock.patch.object(mod.os, "readlink", side_effect=_fake_readlink),
+        ):
+            self.assertEqual(
+                mod._normalize_darwin_system_prefix(Path("/var/folders/xx/cert.json")),
+                Path("/private/var/folders/xx/cert.json"),
+            )
+            self.assertEqual(
+                mod._normalize_darwin_system_prefix(Path("/tmp/cert.json")),
+                Path("/private/tmp/cert.json"),
+            )
+            # Exact /tmp leaf or parent traversal must never normalize
+            self.assertEqual(mod._normalize_darwin_system_prefix(Path("/tmp")), Path("/tmp"))
+            self.assertEqual(
+                mod._normalize_darwin_system_prefix(Path("/tmp/../etc/passwd")),
+                Path("/tmp/../etc/passwd"),
+            )
+            # Guard accepts /var/... & /tmp/... when only /var or /tmp is the Darwin OS alias
+            fake_symlinks = {Path("/var"), Path("/tmp"), Path("/private/var/folders/xx/evil_link")}
+            with mock.patch.object(Path, "is_symlink", autospec=True, side_effect=lambda p: p in fake_symlinks):
+                mod._require_no_symlink_path(Path("/var/folders/xx/cert.json"))
+                mod._require_no_symlink_path(Path("/tmp/cert.json"))
+                with self.assertRaises(mod.VenturiBioError) as cm_nest:
+                    mod._require_no_symlink_path(Path("/var/folders/xx/evil_link/cert.json"))
+                self.assertEqual(cm_nest.exception.code, "SYMLINK_ANCESTOR_FORBIDDEN")
+                with self.assertRaises(mod.VenturiBioError) as cm_exact:
+                    mod._require_no_symlink_path(Path("/tmp"))
+                self.assertEqual(cm_exact.exception.code, "SYMLINK_FORBIDDEN")
+
+        # Non-root owner (st_uid != 0) or unexpected target must NOT normalize and must fail closed
+        with (
+            mock.patch.object(mod.sys, "platform", "darwin"),
+            mock.patch.object(mod.os, "lstat", return_value=user_lnk),
+            mock.patch.object(mod.os, "readlink", side_effect=_fake_readlink),
+            mock.patch.object(Path, "is_symlink", autospec=True, side_effect=lambda p: p == Path("/var")),
+        ):
+            with self.assertRaises(mod.VenturiBioError) as cm_uid:
+                mod._require_no_symlink_path(Path("/var/folders/xx/cert.json"))
+            self.assertEqual(cm_uid.exception.code, "SYMLINK_ANCESTOR_FORBIDDEN")
+
+        with (
+            mock.patch.object(mod.sys, "platform", "darwin"),
+            mock.patch.object(mod.os, "lstat", return_value=root_lnk),
+            mock.patch.object(mod.os, "readlink", return_value="private/evil"),
+            mock.patch.object(Path, "is_symlink", autospec=True, side_effect=lambda p: p == Path("/var")),
+        ):
+            with self.assertRaises(mod.VenturiBioError) as cm_tgt:
+                mod._require_no_symlink_path(Path("/var/folders/xx/cert.json"))
+            self.assertEqual(cm_tgt.exception.code, "SYMLINK_ANCESTOR_FORBIDDEN")
+
+        # Non-Darwin platform must never normalize /var or /tmp
+        with (
+            mock.patch.object(mod.sys, "platform", "linux"),
+            mock.patch.object(Path, "is_symlink", autospec=True, side_effect=lambda p: p == Path("/var")),
+        ):
+            with self.assertRaises(mod.VenturiBioError) as cm_lin:
+                mod._require_no_symlink_path(Path("/var/folders/xx/cert.json"))
+            self.assertEqual(cm_lin.exception.code, "SYMLINK_ANCESTOR_FORBIDDEN")
+
 
 if __name__ == "__main__":
     unittest.main()
