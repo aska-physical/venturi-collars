@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic Venturi fluid-loss + Pure PVDF vs. M55J/PCB-Coil Hybrid aeroelastic harvester verifier for aska-physical/venturi-collars."""
+"""Deterministic Venturi fluid-loss + Pure PVDF vs. M55J/PCB-Coil Hybrid aeroelastic harvester verifier for aska-physical/venturi-collars (v1.1.0)."""
 
 from __future__ import annotations
 
@@ -16,6 +16,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 CERT_PATH = ROOT / "results" / "certificate.json"
 MAX_CERT_BYTES = 1_048_576
+
+# Standard dry air at 20 C (rho = 1.204 kg/m^3, gamma = 1.4, R = 287.05 J/(kg*K))
+RHO_AIR_KG_M3 = 1.204
+GAMMA_AIR = 1.4
+R_AIR_J_KG_K = 287.05
+T_AIR_K = 293.15
+A_SOUND_M_S = math.sqrt(GAMMA_AIR * R_AIR_J_KG_K * T_AIR_K)
+MAX_INCOMPRESSIBLE_MACH = 0.30
 
 
 class CheckFailure(RuntimeError):
@@ -51,6 +59,13 @@ def strict_finite_min(bound: Any, value: Any, name: str) -> float:
     fb = strict_finite(bound, f"{name}.bound")
     fv = strict_finite(value, f"{name}.value")
     return fb if fb <= fv else fv
+
+
+def strict_finite_max(bound: Any, value: Any, name: str) -> float:
+    """NaN-safe lower clamp: rejects non-finite arguments instead of silently swallowing NaN."""
+    fb = strict_finite(bound, f"{name}.bound")
+    fv = strict_finite(value, f"{name}.value")
+    return fb if fb >= fv else fv
 
 
 def render_canonical_cert_bytes(cert: dict[str, Any]) -> bytes:
@@ -92,6 +107,76 @@ def write_canonical_cert_bytes(cert_path: Path, payload: bytes) -> None:
     cert_path.write_bytes(payload)
 
 
+def compute_venturi_loss_coeff(
+    area_ratio_beta: float,
+    diffuser_half_angle_deg: float,
+    f_darcy: float = 0.020,
+) -> tuple[float, float]:
+    """Continuous conical Venturi minor-loss coefficient K_venturi(beta, 2*theta) referenced to duct dynamic head.
+
+    Combines smooth contraction loss, conical wall Darcy friction integrated along slant length,
+    Gibson/Idelchik conical expansion-stall factor with Kline-Reneau (2*theta, AR=1/beta) stall
+    intensification, and smooth sharp-baffle vena-contracta onset (C_c: 1.0 -> 0.61 over 15..45 deg).
+    Replaces v1.0.0's flat <=8 deg constant and discontinuous Borda-Carnot cliff.
+    """
+    area_ratio_beta = strict_finite(area_ratio_beta, "area_ratio_beta", positive=True)
+    require(area_ratio_beta <= 1.0, f"area_ratio_beta must be <= 1.0, got {area_ratio_beta!r}")
+    diffuser_half_angle_deg = strict_finite(diffuser_half_angle_deg, "diffuser_half_angle_deg", non_negative=True)
+    require(diffuser_half_angle_deg <= 90.0, f"diffuser_half_angle_deg must be <= 90.0, got {diffuser_half_angle_deg!r}")
+    f_darcy = strict_finite(f_darcy, "f_darcy", non_negative=True)
+
+    if area_ratio_beta == 1.0:
+        return 0.0, 0.0
+
+    require(
+        diffuser_half_angle_deg > 0.0,
+        f"diffuser_half_angle_deg must be > 0 when area_ratio_beta < 1.0, got {diffuser_half_angle_deg!r}",
+    )
+    th_rad = math.radians(diffuser_half_angle_deg)
+    ar = 1.0 / area_ratio_beta
+    k_contr = 0.04 * (ar**2 - 1.0)
+    k_fric = (f_darcy / (8.0 * math.sin(th_rad))) * (ar**2 - 1.0)
+
+    if diffuser_half_angle_deg >= 45.0:
+        k_exp_base = 1.0
+    else:
+        k_exp_base = strict_finite_min(1.0, 3.2 * (math.tan(th_rad) ** 1.25), "k_exp_base")
+
+    # Kline-Reneau area-ratio stall intensification: larger AR=1/beta separates at smaller full angle 2*theta
+    two_theta_deg = 2.0 * diffuser_half_angle_deg
+    two_theta_stall_deg = 16.0 / ((ar - 1.0) ** 0.35)
+    stall_excess = strict_finite_max(0.0, (two_theta_deg - two_theta_stall_deg) / two_theta_stall_deg, "stall_excess")
+    k_exp = strict_finite_min(1.0, k_exp_base * (1.0 + 0.5 * stall_excess), "k_exp")
+
+    # Smooth vena-contracta ramp for sharply separated diffusers/baffles (15 deg -> 45 deg: C_c = 1.0 -> 0.61)
+    if diffuser_half_angle_deg <= 15.0:
+        c_c = 1.0
+    else:
+        s_vc = strict_finite_min(1.0, (diffuser_half_angle_deg - 15.0) / 30.0, "s_vc")
+        c_c = 1.0 - s_vc * (1.0 - 0.61)
+
+    k_diff = k_fric + k_exp * ((ar / c_c - 1.0) ** 2)
+    return strict_finite(k_contr + k_diff, "K_venturi", non_negative=True), k_exp
+
+
+def supercritical_vel_factor(
+    U_throat_m_s: float,
+    U_crit_throat_m_s: float,
+    U_sat_m_s: float = 0.0,
+) -> float:
+    """Dimensionless supercritical Hopf flutter amplitude factor sqrt((U_t^2 - U_c^2) / (U_c^2 + U_sat^2)).
+
+    Defaults to U_sat_m_s = 0.0 (pure dimensionless sqrt((U_t/U_c)^2 - 1)), removing v1.0.0's
+    unexplained dimensional '+ 6.0' (m^2/s^2) denominator constant.
+    """
+    u_t = strict_finite(U_throat_m_s, "U_throat_m_s", non_negative=True)
+    u_c = strict_finite(U_crit_throat_m_s, "U_crit_throat_m_s", positive=True)
+    u_s = strict_finite(U_sat_m_s, "U_sat_m_s", non_negative=True)
+    if u_t <= u_c:
+        return 0.0
+    return strict_finite(math.sqrt((u_t**2 - u_c**2) / (u_c**2 + u_s**2)), "vel_factor", non_negative=True)
+
+
 def evaluate_venturi_collar(
     duct_diam_m: float,
     area_ratio_beta: float,
@@ -99,25 +184,30 @@ def evaluate_venturi_collar(
     U_duct_m_s: float,
     hybrid_em_coil: bool = True,
     num_reeds: int = 6,
+    U_sat_m_s: float = 0.0,
 ) -> dict[str, float]:
     duct_diam_m = strict_finite(duct_diam_m, "duct_diam_m", positive=True)
     area_ratio_beta = strict_finite(area_ratio_beta, "area_ratio_beta", positive=True)
     require(area_ratio_beta <= 1.0, f"area_ratio_beta must be <= 1.0, got {area_ratio_beta!r}")
     diffuser_half_angle_deg = strict_finite(diffuser_half_angle_deg, "diffuser_half_angle_deg", non_negative=True)
+    require(diffuser_half_angle_deg <= 90.0, f"diffuser_half_angle_deg must be <= 90.0, got {diffuser_half_angle_deg!r}")
     U_duct_m_s = strict_finite(U_duct_m_s, "U_duct_m_s", non_negative=True)
     require(type(hybrid_em_coil) is bool, "hybrid_em_coil must be bool")
     require(type(num_reeds) is int and num_reeds >= 1, "num_reeds must be positive int")
+    U_sat_m_s = strict_finite(U_sat_m_s, "U_sat_m_s", non_negative=True)
 
-    rho_air = 1.204
+    rho_air = RHO_AIR_KG_M3
     A_duct = 0.25 * math.pi * (duct_diam_m**2)
     Q_m3_s = A_duct * U_duct_m_s
     U_throat = U_duct_m_s / area_ratio_beta
+    Ma_throat = strict_finite(U_throat / A_SOUND_M_S, "Ma_throat", non_negative=True)
+    require(
+        Ma_throat <= MAX_INCOMPRESSIBLE_MACH,
+        f"throat Mach number {Ma_throat:.4f} exceeds incompressible validity limit {MAX_INCOMPRESSIBLE_MACH:.2f}",
+    )
     q_duct = 0.5 * rho_air * (U_duct_m_s**2)
 
-    if diffuser_half_angle_deg <= 8.0:
-        K_venturi = 0.04 * (1.0 / area_ratio_beta**2 - 1.0) + 0.13 * ((1.0 / area_ratio_beta - 1.0) ** 2)
-    else:
-        K_venturi = ((1.0 / (0.61 * area_ratio_beta) - 1.0) ** 2)
+    K_venturi, diffuser_stall_factor = compute_venturi_loss_coeff(area_ratio_beta, diffuser_half_angle_deg)
 
     reed_L_m, reed_W_m = 0.070, 0.030
     t_cfrp_m, t_pvdf_tot = 35e-6, 84e-6
@@ -143,7 +233,11 @@ def evaluate_venturi_collar(
             "U_duct_m_s": U_duct_m_s,
             "U_throat_m_s": round(U_throat, 3),
             "U_crit_throat_m_s": round(U_crit_throat, 3),
+            "Ma_throat": round(Ma_throat, 5),
+            "K_venturi": round(K_venturi, 4),
+            "diffuser_stall_factor": round(diffuser_stall_factor, 4),
             "f_flutter_Hz": round(f_flutter_Hz, 2),
+            "tip_amp_mm": 0.0,
             "dP_total_Pa": round(dP_total_Pa, 3),
             "P_fluid_loss_mW": round(P_fluid_W * 1e3, 2),
             "P_piezo_only_mW": 0.0,
@@ -151,7 +245,7 @@ def evaluate_venturi_collar(
             "peak_cfrp_strain_pct": 0.0,
         }
 
-    vel_factor = math.sqrt((U_throat**2 - U_crit_throat**2) / (U_crit_throat**2 + 6.0))
+    vel_factor = supercritical_vel_factor(U_throat, U_crit_throat, U_sat_m_s=U_sat_m_s)
     tip_amp_m = strict_finite_min(0.0040, 0.0026 * vel_factor, "tip_amp_m")
     y_max = 0.5 * t_cfrp_m + t_pvdf_tot
     peak_strain = 3.52 * tip_amp_m * y_max / (reed_L_m**2)
@@ -182,7 +276,11 @@ def evaluate_venturi_collar(
         "U_duct_m_s": U_duct_m_s,
         "U_throat_m_s": round(U_throat, 3),
         "U_crit_throat_m_s": round(U_crit_throat, 3),
+        "Ma_throat": round(Ma_throat, 5),
+        "K_venturi": round(K_venturi, 4),
+        "diffuser_stall_factor": round(diffuser_stall_factor, 4),
         "f_flutter_Hz": round(f_flutter_Hz, 2),
+        "tip_amp_mm": round(tip_amp_m * 1e3, 3),
         "dP_total_Pa": round(dP_total_Pa, 3),
         "P_fluid_loss_mW": round(P_fluid_W * 1e3, 2),
         "P_piezo_only_mW": round(P_piezo_mW, 4),
@@ -201,6 +299,23 @@ def run_verification() -> dict[str, Any]:
     straight_duct_15ms = evaluate_venturi_collar(0.20, 1.00, 7.0, 1.5, hybrid_em_coil=True)
     venturi_duct_15ms = evaluate_venturi_collar(0.20, 0.64, 7.0, 1.5, hybrid_em_coil=True)
     bluff_orifice_4ms = evaluate_venturi_collar(0.20, 0.50, 45.0, 4.0, hybrid_em_coil=True)
+    stalled_15deg_4ms = evaluate_venturi_collar(0.20, 0.64, 15.0, 4.0, hybrid_em_coil=True)
+    stalled_25deg_4ms = evaluate_venturi_collar(0.20, 0.64, 25.0, 4.0, hybrid_em_coil=True)
+    opt_4deg_4ms = evaluate_venturi_collar(0.20, 0.64, 4.0, 4.0, hybrid_em_coil=True)
+
+    # Quantify the v1.0.0 unexplained +6.0 m^2/s^2 denominator distortion at 1.8 m/s turndown
+    u_t_18 = sweep_hybrid[0]["U_throat_m_s"]
+    u_c_18 = sweep_hybrid[0]["U_crit_throat_m_s"]
+    vf_clean_18 = supercritical_vel_factor(u_t_18, u_c_18, U_sat_m_s=0.0)
+    vf_legacy_plus6_18 = supercritical_vel_factor(u_t_18, u_c_18, U_sat_m_s=math.sqrt(6.0))
+    legacy_plus6_power_ratio = (vf_legacy_plus6_18 / vf_clean_18) ** 2
+
+    # Confirm high-Mach choked/compressible throat (beta=0.05 at 6 m/s -> U_t=120 m/s, Ma=0.35 > 0.30) is rejected
+    high_mach_rejected = False
+    try:
+        evaluate_venturi_collar(0.20, 0.05, 7.0, 6.0, hybrid_em_coil=True)
+    except CheckFailure as exc:
+        high_mach_rejected = "Mach" in str(exc)
 
     sensor_demand_mW = 0.08
     require(
@@ -222,16 +337,29 @@ def run_verification() -> dict[str, Any]:
         {"control": "unaccelerated_straight_duct_starts_at_1.5ms_turndown", "rejected": straight_duct_15ms["P_total_harvested_mW"] == 0.0 and venturi_duct_15ms["P_total_harvested_mW"] > 0.01},
         {"control": "abrupt_45deg_baffle_meets_15Pa_hvac_static_pressure_limit", "rejected": bluff_orifice_4ms["dP_total_Pa"] > 15.0 and sweep_hybrid[2]["dP_total_Pa"] < 6.0},
         {"control": "reed_exceeds_m55j_0.8pct_ultimate_strain_at_6ms", "rejected": sweep_hybrid[3]["peak_cfrp_strain_pct"] < 0.25},
+        {"control": "unexplained_plus6_denominator_preserves_turndown_harvest_within_50pct", "rejected": legacy_plus6_power_ratio < 0.50},
+        {"control": "stalled_15deg_diffuser_matches_7deg_minor_loss", "rejected": opt_4deg_4ms["K_venturi"] < sweep_hybrid[2]["K_venturi"] < stalled_15deg_4ms["K_venturi"] < stalled_25deg_4ms["K_venturi"] and stalled_15deg_4ms["dP_total_Pa"] > 1.5 * sweep_hybrid[2]["dP_total_Pa"]},
+        {"control": "incompressible_model_accepts_high_mach_choked_throat", "rejected": high_mach_rejected and sweep_hybrid[3]["Ma_throat"] < 0.05},
     ]
     failed_controls = [c["control"] for c in controls if not c["rejected"]]
     require(not failed_controls, f"must-fail controls did not reject: {failed_controls}")
 
     return {
         "repository": "aska-physical/venturi-collars",
-        "certificate_version": "1.0.0",
+        "certificate_version": "1.1.0",
         "duct_geometry": {"diam_mm": 200, "throat_area_ratio_beta": 0.64, "diffuser_half_angle_deg": 7.0, "reeds": 6},
         "pure_pvdf_4ms_negative_finding_mW": piezo_only_4ms["P_total_harvested_mW"],
         "hybrid_cfrp_pcb_coil_sweep": sweep_hybrid,
+        "physical_hardening_diagnostics": {
+            "a_sound_20C_m_s": round(A_SOUND_M_S, 3),
+            "incompressible_mach_limit": MAX_INCOMPRESSIBLE_MACH,
+            "turndown_1p8ms_legacy_plus6_power_ratio": round(legacy_plus6_power_ratio, 4),
+            "diffuser_loss_4deg_opt_K": opt_4deg_4ms["K_venturi"],
+            "diffuser_loss_7deg_design_K": sweep_hybrid[2]["K_venturi"],
+            "diffuser_loss_15deg_stall_K": stalled_15deg_4ms["K_venturi"],
+            "diffuser_loss_25deg_stall_K": stalled_25deg_4ms["K_venturi"],
+            "dP_15deg_stall_at_4ms_Pa": stalled_15deg_4ms["dP_total_Pa"],
+        },
         "telemetry_power_margin_at_4ms_x": round(sweep_hybrid[2]["P_total_harvested_mW"] / sensor_demand_mW, 2),
         "must_fail_controls": controls,
     }
@@ -252,7 +380,7 @@ def main() -> int:
         return 1
     passed_controls = sum(1 for c in cert["must_fail_controls"] if c["rejected"])
     total_controls = len(cert["must_fail_controls"])
-    print(f"[PASS] venturi-collars Venturi dP + PVDF negative finding + Hybrid CFRP-Coil checks ({passed_controls}/{total_controls} controls): OK")
+    print(f"[PASS] venturi-collars v1.1.0 Venturi dP + Stall + Mach + PVDF negative finding + Hybrid CFRP-Coil checks ({passed_controls}/{total_controls} controls): OK")
     return 0
 
 
