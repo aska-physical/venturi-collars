@@ -3,11 +3,14 @@
 
 Verifies:
   1. Pure dimensionless supercritical Hopf amplitude scaling (deleted v1.0.0's unexplained '+ 6.0' m^2/s^2
-     denominator constant), restoring 1.8 m/s tip amplitude (1.341 -> 1.991 mm) and power (0.104 -> 0.229 mW).
-  2. Continuous Gibson/Idelchik + Kline-Reneau (2*theta, AR=1/beta) conical diffuser stall loss model
-     with smooth sharp-baffle vena-contracta onset (zero 8 deg or 15 deg step cliffs; interior friction/stall
-     optimum near 4 deg; strict K increase with both 2*theta past optimum and area ratio AR=1/beta).
-  3. Fail-closed incompressible throat Mach validity gate (Ma_throat <= 0.30, rejecting tight beta or high U).
+     denominator constant), updating 1.8 m/s model output from 1.341 -> 1.991 mm and 0.104 -> 0.229 mW
+     (and verifying Control #6 directly guards default evaluate_venturi_collar).
+  2. Continuous Gibson/Idelchik conical expansion + conservative in-repo area-ratio stall-intensification
+     heuristic and sharp-edged orifice/baffle vena-contracta transition heuristic (zero 8 deg or 15 deg
+     step cliffs; interior friction/stall optimum near 4 deg; strict K increase with both 2*theta past
+     optimum and area ratio AR=1/beta).
+  3. Fail-closed incompressible throat Mach validity gate (Ma_throat <= 0.30) and overflow-safe
+     strict_finite_pow guards converting extreme library OverflowErrors into CheckFailure.
   4. Zero bare assert statements across verify.py and this test file.
 """
 
@@ -89,7 +92,7 @@ class TestVenturiCollarsPhysicalHardening(unittest.TestCase):
         self.assertLess(k_15, k_25)
         self.assertLess(k_25, k_45)
 
-        # 4. Kline-Reneau area-ratio stall intensification: at 10 deg, higher AR (smaller beta) has higher stall factor
+        # 4. In-repo area-ratio stall-intensification heuristic: at 10 deg, higher AR (smaller beta) has higher stall factor
         _, stall_b80 = verify.compute_venturi_loss_coeff(0.80, 10.0)
         _, stall_b64 = verify.compute_venturi_loss_coeff(0.64, 10.0)
         _, stall_b50 = verify.compute_venturi_loss_coeff(0.50, 10.0)
@@ -97,6 +100,32 @@ class TestVenturiCollarsPhysicalHardening(unittest.TestCase):
         self.assertLess(stall_b80, stall_b64)
         self.assertLess(stall_b64, stall_b50)
         self.assertLess(stall_b50, stall_b35)
+
+    def test_extreme_overflow_inputs_raise_checkfailure(self) -> None:
+        with self.assertRaises(verify.CheckFailure):
+            verify.compute_venturi_loss_coeff(1e-200, 7.0)
+        with self.assertRaises(verify.CheckFailure):
+            verify.evaluate_venturi_collar(0.2, 1e-200, 7.0, 0.0)
+        with self.assertRaises(verify.CheckFailure):
+            verify.evaluate_venturi_collar(0.2, 0.64, 7.0, 4.0, U_sat_m_s=1e200)
+        with self.assertRaises(verify.CheckFailure):
+            verify.supercritical_vel_factor(4.0, 2.0, U_sat_m_s=1e200)
+
+    def test_control6_guards_default_u_sat_zero(self) -> None:
+        orig_eval = verify.evaluate_venturi_collar
+
+        def poisoned_default_eval(*args, **kwargs):
+            if "U_sat_m_s" not in kwargs:
+                kwargs["U_sat_m_s"] = math.sqrt(6.0)
+            return orig_eval(*args, **kwargs)
+
+        try:
+            verify.evaluate_venturi_collar = poisoned_default_eval
+            with self.assertRaises(verify.CheckFailure) as ctx:
+                verify.run_verification()
+            self.assertIn("unexplained_plus6_denominator_preserves_turndown_harvest_within_50pct", str(ctx.exception))
+        finally:
+            verify.evaluate_venturi_collar = orig_eval
 
     def test_incompressible_mach_gate_and_angle_bounds_fail_closed(self) -> None:
         # Tight contraction beta=0.05 at 6.0 m/s -> U_throat = 120 m/s, Ma = 0.350 > 0.30 -> rejected!
