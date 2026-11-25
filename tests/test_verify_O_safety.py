@@ -38,7 +38,7 @@ class VerifyOptimizedModeTests(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, msg=f"flags={flags} stderr={proc.stderr}")
             self.assertIn("[PASS]", proc.stdout)
-            self.assertIn("(5/5 controls): OK", proc.stdout)
+            self.assertIn("(8/8 controls): OK", proc.stdout)
 
     def test_clean_write_is_idempotent_and_drift_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as td:

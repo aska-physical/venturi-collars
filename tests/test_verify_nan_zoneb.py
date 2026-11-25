@@ -54,7 +54,7 @@ class VenturiHardeningTests(unittest.TestCase):
                 check=False,
             )
             _req(proc.returncode == 0, f"flags={flags} rc={proc.returncode} stderr={proc.stderr}")
-            _req("(5/5 controls): OK" in proc.stdout, f"unexpected stdout: {proc.stdout!r}")
+            _req("(8/8 controls): OK" in proc.stdout, f"unexpected stdout: {proc.stdout!r}")
             outputs.append(proc.stdout)
         _req(outputs[0] == outputs[1] == outputs[2], "stdout differed across isolated R4 modes")
 
@@ -62,7 +62,7 @@ class VenturiHardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             cert_path = Path(td) / "results" / "certificate.json"
             rc, out, err = _run_main_inproc(cert_path, ["--write"])
-            _req(rc == 0 and "(5/5 controls): OK" in out, f"--write failed: rc={rc} out={out} err={err}")
+            _req(rc == 0 and "(8/8 controls): OK" in out, f"--write failed: rc={rc} out={out} err={err}")
             _req(cert_path.read_bytes() == orig, "--write drifted from committed canonical bytes")
             # Re-writing over existing regular file stays idempotent
             rc2, _out2, err2 = _run_main_inproc(cert_path, ["--write"])
@@ -116,8 +116,8 @@ class VenturiHardeningTests(unittest.TestCase):
             "ZB03_5000_digit_int": orig_text.replace('"diam_mm": 200', '"diam_mm": ' + ("9" * 5000)),
             "ZB06_bool_as_int": orig_text.replace('"rejected": true', '"rejected": 1', 1),
             "ZB07_duplicate_key": orig_text.replace(
-                '"certificate_version": "1.0.0",',
-                '"certificate_version": "0.0.0",\n  "certificate_version": "1.0.0",',
+                '"certificate_version": "1.1.0",',
+                '"certificate_version": "0.0.0",\n  "certificate_version": "1.1.0",',
                 1,
             ),
             "ZB08_int_as_float": orig_text.replace('"reeds": 6', '"reeds": 6.0', 1),

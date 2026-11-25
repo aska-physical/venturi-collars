@@ -1,5 +1,5 @@
 {
-  "certificate_version": "1.0.0",
+  "certificate_version": "1.1.0",
   "duct_geometry": {
     "diam_mm": 200,
     "diffuser_half_angle_deg": 7.0,
@@ -8,48 +8,64 @@
   },
   "hybrid_cfrp_pcb_coil_sweep": [
     {
-      "P_fluid_loss_mW": 18.49,
-      "P_piezo_only_mW": 0.0031,
-      "P_total_harvested_mW": 0.104,
+      "K_venturi": 0.1608,
+      "Ma_throat": 0.00819,
+      "P_fluid_loss_mW": 25.33,
+      "P_piezo_only_mW": 0.0069,
+      "P_total_harvested_mW": 0.2291,
       "U_crit_throat_m_s": 2.233,
       "U_duct_m_s": 1.8,
       "U_throat_m_s": 2.812,
-      "dP_total_Pa": 0.327,
+      "dP_total_Pa": 0.448,
+      "diffuser_stall_factor": 0.2326,
       "f_flutter_Hz": 5.32,
-      "peak_cfrp_strain_pct": 0.0098
+      "peak_cfrp_strain_pct": 0.0145,
+      "tip_amp_mm": 1.991
     },
     {
-      "P_fluid_loss_mW": 49.54,
-      "P_piezo_only_mW": 0.011,
-      "P_total_harvested_mW": 0.3652,
+      "K_venturi": 0.1608,
+      "Ma_throat": 0.01138,
+      "P_fluid_loss_mW": 67.87,
+      "P_piezo_only_mW": 0.0241,
+      "P_total_harvested_mW": 0.8048,
       "U_crit_throat_m_s": 2.233,
       "U_duct_m_s": 2.5,
       "U_throat_m_s": 3.906,
-      "dP_total_Pa": 0.631,
+      "dP_total_Pa": 0.864,
+      "diffuser_stall_factor": 0.2326,
       "f_flutter_Hz": 5.32,
-      "peak_cfrp_strain_pct": 0.0183
+      "peak_cfrp_strain_pct": 0.0272,
+      "tip_amp_mm": 3.732
     },
     {
-      "P_fluid_loss_mW": 202.91,
+      "K_venturi": 0.1608,
+      "Ma_throat": 0.01821,
+      "P_fluid_loss_mW": 277.98,
       "P_piezo_only_mW": 0.0277,
       "P_total_harvested_mW": 0.9244,
       "U_crit_throat_m_s": 2.233,
       "U_duct_m_s": 4.0,
       "U_throat_m_s": 6.25,
-      "dP_total_Pa": 1.615,
+      "dP_total_Pa": 2.212,
+      "diffuser_stall_factor": 0.2326,
       "f_flutter_Hz": 5.32,
-      "peak_cfrp_strain_pct": 0.0292
+      "peak_cfrp_strain_pct": 0.0292,
+      "tip_amp_mm": 4.0
     },
     {
-      "P_fluid_loss_mW": 684.81,
+      "K_venturi": 0.1608,
+      "Ma_throat": 0.02731,
+      "P_fluid_loss_mW": 938.2,
       "P_piezo_only_mW": 0.0277,
       "P_total_harvested_mW": 0.9244,
       "U_crit_throat_m_s": 2.233,
       "U_duct_m_s": 6.0,
       "U_throat_m_s": 9.375,
-      "dP_total_Pa": 3.633,
+      "dP_total_Pa": 4.977,
+      "diffuser_stall_factor": 0.2326,
       "f_flutter_Hz": 5.32,
-      "peak_cfrp_strain_pct": 0.0292
+      "peak_cfrp_strain_pct": 0.0292,
+      "tip_amp_mm": 4.0
     }
   ],
   "must_fail_controls": [
@@ -72,8 +88,30 @@
     {
       "control": "reed_exceeds_m55j_0.8pct_ultimate_strain_at_6ms",
       "rejected": true
+    },
+    {
+      "control": "unexplained_plus6_denominator_preserves_turndown_harvest_within_50pct",
+      "rejected": true
+    },
+    {
+      "control": "stalled_15deg_diffuser_matches_7deg_minor_loss",
+      "rejected": true
+    },
+    {
+      "control": "incompressible_model_accepts_high_mach_choked_throat",
+      "rejected": true
     }
   ],
+  "physical_hardening_diagnostics": {
+    "a_sound_20C_m_s": 343.232,
+    "dP_15deg_stall_at_4ms_Pa": 3.734,
+    "diffuser_loss_15deg_stall_K": 0.3188,
+    "diffuser_loss_25deg_stall_K": 0.6998,
+    "diffuser_loss_4deg_opt_K": 0.1457,
+    "diffuser_loss_7deg_design_K": 0.1608,
+    "incompressible_mach_limit": 0.3,
+    "turndown_1p8ms_legacy_plus6_power_ratio": 0.4539
+  },
   "pure_pvdf_4ms_negative_finding_mW": 0.0476,
   "repository": "aska-physical/venturi-collars",
   "telemetry_power_margin_at_4ms_x": 11.55
